@@ -52,7 +52,7 @@ ok "прокси жив, моделей в каталоге: ${COUNT}"
 if [ "${COUNT:-0}" -lt 10 ]; then
     warn "каталог подозрительно короткий (у актуального прокси ~23 модели)."
     warn "Похоже, порт держит СТАРЫЙ экземпляр прокси. Останови его и поставь заново:"
-    warn "  fuser -k 3000/tcp ; bash ${APP_DIR}/deploy/install-host.sh"
+    warn "  bash ${APP_DIR}/deploy/kill-stale-proxy.sh && bash ${APP_DIR}/deploy/install-host.sh"
     die "остановлено, чтобы не настраивать Hermes на устаревший прокси"
 fi
 

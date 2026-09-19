@@ -92,7 +92,7 @@ if curl -sf -m 2 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
         ss -ltnp 2>/dev/null | grep ":${PORT}" | sed 's/^/     /' || true
     fi
     warn "если это старый прокси (свой список моделей, без context_length) — останови его:"
-    warn "  fuser -k ${PORT}/tcp   (или убей pid из строки выше)"
+    warn "  bash ${APP_DIR}/deploy/kill-stale-proxy.sh"
 fi
 
 STARTED_VIA_SYSTEMD=false

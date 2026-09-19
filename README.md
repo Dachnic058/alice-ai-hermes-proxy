@@ -109,6 +109,7 @@ hermes config set model.context_length 131072
 ```bash
 systemctl status alice-ai-proxy          # или: journalctl -u alice-ai-proxy -n 50
 tail -30 /root/.hermes/health-assistant/alice-ai-hermes-proxy/proxy.log
+curl -s http://127.0.0.1:3000/healthz    # requests / uptime_s / last_model
 curl -s http://127.0.0.1:3000/v1/models | head -c 400
 python3 scripts/probe_models.py          # прогоняет каждую модель: чат + function calling
 ```
@@ -121,10 +122,12 @@ python3 scripts/probe_models.py          # прогоняет каждую мо�
 - В логе бесконечный `Error: listen EADDRINUSE: address already in use 127.0.0.1:3000`, сервис циклично перезапускается — порт держит СТАРЫЙ экземпляр прокси (обычно запущенный когда-то вручную через `nohup`). Он отдаёт устаревший список моделей, а новый сервис не может занять порт. Лечение:
 
 ```bash
-fuser -k 3000/tcp                  # или: ss -ltnp | grep 3000 → kill <pid>
+bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/kill-stale-proxy.sh
 : > /root/.hermes/health-assistant/alice-ai-hermes-proxy/proxy.log   # очистить мусор
 bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/install-host.sh
 ```
+
+`kill-stale-proxy.sh` не требует `fuser`/`lsof` (их на минимальных образах может не быть): он находит процессы по рабочему каталогу проекта через `/proc`, а владельца порта — через `/proc/net/tcp` и `python3`. Чужие node-процессы не трогает.
 
 Начиная с этой версии `install-host.sh` сам останавливает прежние экземпляры прокси (по рабочему каталогу процесса), а `connect-hermes.sh` отказывается настраивать Hermes, если каталог моделей подозрительно короткий (признак старого процесса).
 
