@@ -118,6 +118,23 @@ python3 scripts/probe_models.py          # прогоняет каждую мо�
 - `Failed to get model` — модели с таким id нет в твоей папке. Посмотри живой список: `curl -s localhost:3000/v1/models`.
 - `401 / Unknown api key` — ключ в `.env` не тот или у сервисного аккаунта нет роли `ai.languageModels.user`.
 - `503` при работе Hermes — прокси не запущен (проверь `systemctl status alice-ai-proxy`).
+- В логе бесконечный `Error: listen EADDRINUSE: address already in use 127.0.0.1:3000`, сервис циклично перезапускается — порт держит СТАРЫЙ экземпляр прокси (обычно запущенный когда-то вручную через `nohup`). Он отдаёт устаревший список моделей, а новый сервис не может занять порт. Лечение:
+
+```bash
+fuser -k 3000/tcp                  # или: ss -ltnp | grep 3000 → kill <pid>
+: > /root/.hermes/health-assistant/alice-ai-hermes-proxy/proxy.log   # очистить мусор
+bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/install-host.sh
+```
+
+Начиная с этой версии `install-host.sh` сам останавливает прежние экземпляры прокси (по рабочему каталогу процесса), а `connect-hermes.sh` отказывается настраивать Hermes, если каталог моделей подозрительно короткий (признак старого процесса).
+
+Логи запросов: каждый вызов пишется в `proxy.log` строкой вида
+
+```
+[proxy] POST /v1/chat/completions model=gpt://<folder>/aliceai-llm/latest stream -> 200 (1128ms)
+```
+
+Отключить (если нужен только шум от ошибок): `PROXY_ACCESS_LOG=0` в `.env`.
 
 ## Безопасность
 

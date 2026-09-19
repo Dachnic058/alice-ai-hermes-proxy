@@ -40,10 +40,21 @@ say "0/5 Hermes: $(hermes --version 2>/dev/null | head -1)"
 
 # ------------------------------------------------------------- 1. прокси
 say "1/5 Проверка прокси"
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LOG_FILE="${APP_DIR}/proxy.log"
 curl -sf -m 5 "${ROOT_URL}/healthz" >/dev/null \
     || die "прокси не отвечает на ${ROOT_URL}/healthz. Сначала: bash deploy/install-host.sh"
-COUNT="$(curl -sf -m 20 "${BASE_URL}/models" | grep -o '"id"' | wc -l | tr -d ' ')"
+MODELS_JSON="$(curl -sf -m 20 "${BASE_URL}/models" || true)"
+COUNT="$(printf '%s' "$MODELS_JSON" | grep -o '"id"' | wc -l | tr -d ' ')"
 ok "прокси жив, моделей в каталоге: ${COUNT}"
+# Старый экземпляр прокси держит порт и отдаёт свой короткий статический список.
+# Лучше остановиться сейчас, чем настроить Hermes на мёртвый/устаревший процесс.
+if [ "${COUNT:-0}" -lt 10 ]; then
+    warn "каталог подозрительно короткий (у актуального прокси ~23 модели)."
+    warn "Похоже, порт держит СТАРЫЙ экземпляр прокси. Останови его и поставь заново:"
+    warn "  fuser -k 3000/tcp ; bash ${APP_DIR}/deploy/install-host.sh"
+    die "остановлено, чтобы не настраивать Hermes на устаревший прокси"
+fi
 
 # --------------------------------------------- 2. регистрация endpoint
 say "2/5 Регистрируем endpoint в Hermes"
@@ -94,11 +105,22 @@ fi
 say "5/5 Проверка"
 hermes config get model_aliases --json 2>/dev/null | head -c 400; echo
 if [ "$SKIP_TEST" != "1" ]; then
-    printf '   делаю тестовый запрос через Hermes (это ~10 секунд)\n'
-    if timeout 120 hermes chat -q "Ответь одним словом: столица Франции?" 2>&1 | grep -qiE 'париж'; then
-        ok "Hermes реально ходит в Yandex через прокси — работает"
+    # Проверяем не «ответ вообще», а именно то, что запрос ушёл в НАШ прокси: берём
+    # алиас alice (он жёстко смотрит на этот base_url) и сверяем счётчик запросов,
+    # который прокси отдаёт в /healthz.
+    BEFORE="$(curl -sf -m 5 "${ROOT_URL}/healthz" | grep -o '"requests":[0-9]*' | cut -d: -f2)"
+    printf '   делаю тестовый запрос через Hermes (модель alice, ~10 секунд)\n'
+    OUT="$(timeout 180 hermes chat -q "Ответь одним словом: столица Франции?" -m alice 2>&1 || true)"
+    printf '%s\n' "$OUT" | tail -3 | sed 's/^/     /'
+    AFTER="$(curl -sf -m 5 "${ROOT_URL}/healthz" | grep -o '"requests":[0-9]*' | cut -d: -f2)"
+    LAST_MODEL="$(curl -sf -m 5 "${ROOT_URL}/healthz" | grep -o '"last_model":"[^"]*"' | cut -d'"' -f4)"
+    if [ -n "$AFTER" ] && [ -n "$BEFORE" ] && [ "$AFTER" -gt "$BEFORE" ] && printf '%s' "$OUT" | grep -qiE 'париж'; then
+        ok "запрос дошёл до прокси (счётчик ${BEFORE} → ${AFTER}, модель ${LAST_MODEL}) и Yandex ответил"
+    elif [ -n "$AFTER" ] && [ -n "$BEFORE" ] && [ "$AFTER" -gt "$BEFORE" ]; then
+        warn "запрос дошёл до прокси (${BEFORE} → ${AFTER}), но «Париж» в ответе не видно — смотри вывод выше"
     else
-        warn "тестовый запрос не дал ожидаемого ответа — смотри вывод выше"
+        warn "счётчик запросов прокси не вырос: Hermes НЕ пошёл через прокси."
+        warn "проверь: hermes config get model_aliases --json | head -c 300"
     fi
 fi
 

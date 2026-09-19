@@ -70,6 +70,31 @@ fi
 
 # ---------------------------------------------------------------- 4. сервис
 say "4/6 Автозапуск (systemd)"
+# Сначала убираем зависшие/старые экземпляры ЭТОГО ЖЕ прокси: иначе новый сервис
+# получит EADDRINUSE и уйдёт в вечный цикл перезапусков, а порт останется за старым
+# кодом. Убиваем только процессы, чей рабочий каталог — наш APP_DIR.
+APP_REAL="$(readlink -f "$APP_DIR")"
+KILLED=0
+for pid in $(pgrep -x node 2>/dev/null || true); do
+    cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+    cmd="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+    if [ "$cwd" = "$APP_REAL" ] || case "$cmd" in *"$APP_DIR"*) true ;; *) false ;; esac; then
+        kill "$pid" 2>/dev/null && { ok "остановлен старый экземпляр прокси (pid ${pid})"; KILLED=$((KILLED + 1)); }
+    fi
+done
+[ "$KILLED" -eq 0 ] && ok "старых экземпляров не найдено"
+sleep 1
+
+# Кто-то чужой всё ещё держит порт? Скажем об этом прямо, иначе будет тот же EADDRINUSE.
+if curl -sf -m 2 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+    if command -v ss >/dev/null 2>&1; then
+        warn "порт ${PORT} всё ещё занят:"
+        ss -ltnp 2>/dev/null | grep ":${PORT}" | sed 's/^/     /' || true
+    fi
+    warn "если это старый прокси (свой список моделей, без context_length) — останови его:"
+    warn "  fuser -k ${PORT}/tcp   (или убей pid из строки выше)"
+fi
+
 STARTED_VIA_SYSTEMD=false
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF

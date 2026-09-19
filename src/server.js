@@ -203,7 +203,17 @@ async function fetchCatalog() {
 const app = express();
 app.use(express.json({ limit: '32mb' }));
 
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+// Счётчики для внешней проверки: «а точно ли запрос дошёл до прокси?»
+const stats = { startedAt: Date.now(), requests: 0, errors: 0, lastModel: '' };
+
+app.get('/healthz', (req, res) =>
+  res.json({
+    ok: true,
+    uptime_s: Math.round((Date.now() - stats.startedAt) / 1000),
+    requests: stats.requests,
+    errors: stats.errors,
+    last_model: stats.lastModel,
+  }));
 
 app.get('/v1/models', async (req, res) => {
   const data = await fetchCatalog();
@@ -233,9 +243,12 @@ function resolveModelUri(model, path) {
 }
 
 async function proxyToYandex(path, req, res) {
+  const started = Date.now();
+  stats.requests += 1;
   try {
     const body = { ...req.body };
     if (body.model) body.model = resolveModelUri(body.model, path);
+    stats.lastModel = body.model || '';
     const upstream = await fetch(YC_BASE + path, {
       method: req.method,
       headers: {
@@ -246,6 +259,13 @@ async function proxyToYandex(path, req, res) {
       },
       body: JSON.stringify(body),
     });
+
+    if (process.env.PROXY_ACCESS_LOG !== '0') {
+      console.log(
+        `[proxy] ${req.method} /v1${path} model=${body.model || '-'}` +
+        `${req.body && req.body.stream ? ' stream' : ''} -> ${upstream.status} (${Date.now() - started}ms)`
+      );
+    }
 
     res.status(upstream.status);
     const contentType = upstream.headers.get('content-type') || 'application/json';
@@ -258,6 +278,7 @@ async function proxyToYandex(path, req, res) {
       res.end();
     }
   } catch (err) {
+    stats.errors += 1;
     console.error('[proxy] error:', err.message);
     if (!res.headersSent) {
       res.status(502).json({ error: { message: err.message, type: 'proxy_error' } });
