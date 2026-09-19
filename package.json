@@ -1,0 +1,25 @@
+{
+  "name": "alice-ai-hermes-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible proxy for Alice AI / YandexGPT to use in Hermes",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "license": "MIT",
+  "keywords": [
+    "yandexgpt",
+    "alice-ai",
+    "yandex-cloud",
+    "openai-proxy",
+    "hermes"
+  ]
+}
