@@ -29,7 +29,7 @@ OpenAI-совместимый прокси для моделей **Alice AI / Ya
 ### 1. Склонируй и установи зависимости
 
 ```bash
-git clone https://github.com/<you>/alice-ai-hermes-proxy.git
+git clone https://github.com/Dachnic058/alice-ai-hermes-proxy.git
 cd alice-ai-hermes-proxy
 npm install
 ```
@@ -40,7 +40,17 @@ npm install
 cp .env.example .env
 ```
 
-Минимум для продакшена:
+Самый простой вариант — статический API-ключ:
+
+```env
+FOLDER_ID=b1g.........
+API_KEY=AQVN.........
+PROXY_MODELS=yandexgpt/latest,yandexgpt-lite/latest,alice-ai/latest
+```
+
+> `API_KEY` — это статический API-ключ сервисного аккаунта (начинается с `AQVN...`), а не IAM-токен. Он не истекает сам.
+
+Альтернатива для продакшена с автообновлением — ключ сервисного аккаунта:
 
 ```env
 FOLDER_ID=b1g.........
@@ -108,7 +118,7 @@ docker compose up -d --build
 ## Важные замечания
 
 - **Никогда не выкладывайте** `authorized_key.json` и `.env` в git (они в `.gitignore`).
-- **IAM-ключ начинающийся с `AQV...`** — это статический IAM-токен: он подходит для `IAM_TOKEN` (режим теста), но сам не обновляется. Для постоянной работы используйте `authorized_key.json`.
+- **API-ключ начинающийся с `AQVN...`** — статический API-ключ сервисного аккаунта: подходит для `API_KEY`, не истекает сам. IAM-токен (`t1....`) — временный, для `IAM_TOKEN`. Для автообновления — `authorized_key.json`.
 - Токены валятся в биллинг **Yandex Cloud** — лимиты/квоты смотрите там.
 - Если Hermes на другом хосте — запустите прокси на VPS и укажите в Hermes `http://<vps-ip>:3000/v1`, при этом **ограничьте доступ** (фаервол / VPN / reverse proxy с авторизацией), так как эндпоинт без авторизации тратит ваши токены.
 

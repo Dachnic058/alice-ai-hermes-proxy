@@ -2,7 +2,7 @@
  * alice-ai-hermes-proxy
  * OpenAI-compatible proxy for Alice AI / YandexGPT (Yandex Cloud).
  *
- * Auth modes (pick ONE):
+ * Auth modes (pick ONE): API_KEY (static key, simplest) | IAM_TOKEN | SA_JSON / SA_JSON_PATH
  *   1) IAM_TOKEN            — ready IAM token (lifetime ~12 h for user tokens, ~1 h for service account tokens)
  *   2) SA_JSON / SA_JSON_PATH — service account authorized key; proxy exchanges it for an IAM token
  *                               and auto-refreshes it every TOKEN_REFRESH_INTERVAL_MIN minutes.
@@ -20,7 +20,7 @@ const YC_BASE =
   process.env.YC_BASE_URL ||
   'https://llm.api.cloud.yandex.net/foundationModels/v1';
 
-const FOLDER_ID = process.env.FOLDER_ID || '';
+const FOLDER_ID = process.env.FOLDER_ID || process.env.YC_FOLDER_ID || '';
 if (!FOLDER_ID) {
   console.error('[proxy] FOLDER_ID is not set. Requests will fail.');
 }
@@ -34,6 +34,7 @@ const MODELS = (process.env.PROXY_MODELS ||
 
 // --------------------------- IAM token manager ---------------------------
 
+const API_KEY = process.env.API_KEY || process.env.YC_API_KEY || '';
 const IAM_TOKEN = process.env.IAM_TOKEN || '';
 const SA_JSON = process.env.SA_JSON || '';
 const SA_JSON_PATH = process.env.SA_JSON_PATH || '';
@@ -114,12 +115,12 @@ app.get('/v1/models', (req, res) => {
 
 async function proxyToYandex(path, req, res) {
   try {
-    const iam = await getIamToken();
+    const auth = API_KEY ? `Api-Key ${API_KEY}` : `Bearer ${await getIamToken()}`;
     const upstream = await fetch(YC_BASE + path, {
       method: req.method,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${iam}`,
+        Authorization: auth,
         'x-folder-id': FOLDER_ID,
         Accept: req.body && req.body.stream ? 'text/event-stream' : 'application/json',
       },
@@ -155,7 +156,11 @@ app.use((req, res) => res.status(404).json({ error: { message: 'not found' } }))
 app.listen(PORT, HOST, async () => {
   console.log(`[proxy] listening on http://${HOST}:${PORT}/v1`);
   console.log(`[proxy] models: ${MODELS.join(', ')}`);
-  if (!IAM_TOKEN) {
+  if (API_KEY) {
+    console.log('[proxy] using static API key (Api-Key auth)');
+  } else if (IAM_TOKEN) {
+    console.log('[proxy] using static IAM_TOKEN from env');
+  } else {
     try {
       await refreshIamToken();
     } catch (err) {
@@ -164,7 +169,5 @@ app.listen(PORT, HOST, async () => {
     setInterval(() => {
       refreshIamToken().catch((e) => console.error('[proxy] refresh failed:', e.message));
     }, REFRESH_MIN * 60 * 1000);
-  } else {
-    console.log('[proxy] using static IAM_TOKEN from env');
   }
 });
