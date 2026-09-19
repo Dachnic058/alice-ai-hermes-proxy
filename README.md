@@ -83,6 +83,18 @@ bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/connect-hermes.
 
 Скрипт регистрирует endpoint в Hermes и заводит короткие алиасы моделей — после этого в `hermes model` появляется строка с живым списком моделей Yandex, а переключение работает командами вида `/model alice`.
 
+### Роль «воркер» для субагентов
+
+Чтобы `delegate_task` (субагенты) ходили не на модель головы, а на выбранную модель Yandex:
+
+```bash
+bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/connect-worker.sh
+# другая модель-воркер:
+WORKER_MODEL=gpt-oss-120b/latest bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/connect-worker.sh
+```
+
+Скрипт пишет `delegation.base_url` + `delegation.model` + `delegation.api_key` (проверено на Hermes v0.21.3: голова вызывает субагента, и в `proxy.log` видны его запросы отдельной моделью). Откат — `hermes config unset delegation.base_url delegation.model delegation.api_key`.
+
 Что именно прописывается в `~/.hermes/config.yaml` (эквивалент вручную):
 
 ```
