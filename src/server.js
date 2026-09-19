@@ -242,6 +242,39 @@ function resolveModelUri(model, path) {
   return `gpt://${FOLDER_ID}/${value}`;
 }
 
+// Сколько ждать ответа Яндекса (только до получения заголовков — длинные стримы не рвём)
+// и сколько раз повторить запрос, если соединение не установилось.
+const UPSTREAM_TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS || '120000', 10);
+const UPSTREAM_RETRIES = parseInt(process.env.UPSTREAM_RETRIES || '1', 10);
+
+function upstreamCause(err) {
+  const c = err && err.cause;
+  if (!c) return '';
+  return String(c.code || c.message || c).slice(0, 160);
+}
+
+// fetch к Яндексу с таймаутом на установку соединения и одним повтором на сетевой сбой.
+// Повтор безопасен: если fetch отвалился, ответ ещё не начал приходить.
+async function fetchUpstream(path, init, attempt = 0) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  try {
+    const upstream = await fetch(YC_BASE + path, { ...init, signal: controller.signal });
+    clearTimeout(timer);
+    return upstream;
+  } catch (err) {
+    clearTimeout(timer);
+    const cause = upstreamCause(err);
+    if (attempt < UPSTREAM_RETRIES) {
+      console.log(`[proxy] upstream fetch failed: ${err.message}${cause ? ' / ' + cause : ''} — повтор ${attempt + 1}/${UPSTREAM_RETRIES}`);
+      await new Promise((r) => setTimeout(r, 500));
+      return fetchUpstream(path, init, attempt + 1);
+    }
+    console.error(`[proxy] upstream fetch failed finally: ${err.message}${cause ? ' / ' + cause : ''}`);
+    throw new Error(`${err.message}${cause ? ` (${cause})` : ''}`);
+  }
+}
+
 async function proxyToYandex(path, req, res) {
   const started = Date.now();
   stats.requests += 1;
@@ -249,7 +282,7 @@ async function proxyToYandex(path, req, res) {
     const body = { ...req.body };
     if (body.model) body.model = resolveModelUri(body.model, path);
     stats.lastModel = body.model || '';
-    const upstream = await fetch(YC_BASE + path, {
+    const upstream = await fetchUpstream(path, {
       method: req.method,
       headers: {
         'Content-Type': 'application/json',
@@ -287,7 +320,6 @@ async function proxyToYandex(path, req, res) {
     }
   }
 }
-
 app.post('/v1/chat/completions', (req, res) => proxyToYandex('/chat/completions', req, res));
 app.post('/v1/completions', (req, res) => proxyToYandex('/completions', req, res));
 app.post('/v1/embeddings', (req, res) => proxyToYandex('/embeddings', req, res));

@@ -119,6 +119,8 @@ python3 scripts/probe_models.py          # прогоняет каждую мо�
 - `Failed to get model` — модели с таким id нет в твоей папке. Посмотри живой список: `curl -s localhost:3000/v1/models`.
 - `401 / Unknown api key` — ключ в `.env` не тот или у сервисного аккаунта нет роли `ai.languageModels.user`.
 - `503` при работе Hermes — прокси не запущен (проверь `systemctl status alice-ai-proxy`).
+- `HTTP 502: fetch failed` — сетевой сбой на пути до Яндекса (у прокси есть один автоматический повтор, и в тексте ошибки теперь видно причину, например `(ECONNRESET)`). Если повторяется — смотри `proxy.log`: строки `upstream fetch failed` покажут код причины. Таймаут и число повторов настраиваются в `.env`: `UPSTREAM_TIMEOUT_MS`, `UPSTREAM_RETRIES`.
+- Hermes пишет «Custom endpoint's safety filter refused this request», а модель отвечает «Я не могу обсуждать эту тему» — это **фильтр Яндекса**, а не ошибка прокси. Alice AI LLM фильтрует заметно строже остальных моделей папки; на таких темах просто переключись на `/model qwen-ya`, `/model oss-ya` или `/model ds-ya`.
 - В логе бесконечный `Error: listen EADDRINUSE: address already in use 127.0.0.1:3000`, сервис циклично перезапускается — порт держит СТАРЫЙ экземпляр прокси (обычно запущенный когда-то вручную через `nohup`). Он отдаёт устаревший список моделей, а новый сервис не может занять порт. Лечение:
 
 ```bash
