@@ -1,139 +1,137 @@
 # alice-ai-hermes-proxy
 
-OpenAI-совместимый прокси для моделей **Alice AI / YandexGPT** из Yandex Cloud, чтобы подключить их в **Hermes** (Desktop или CLI) как обычный Custom Endpoint.
+OpenAI-совместимый прокси к **Yandex Cloud AI Studio** (Alice AI LLM, YandexGPT 5, DeepSeek, Qwen, gpt-oss) — чтобы эти модели можно было использовать в **Hermes Agent**.
+Слушает только localhost, наружу ничего не отдаёт.
 
-У YandexGPT нет «привычного» OpenAI API-ключа — вместо него используются:
-- **IAM-токен** (короткоживущий) или **ключ сервисного аккаунта** (`authorized_key.json`),
-- **Folder ID**.
+## Что умеет
 
-Этот прокси сам обменивает ключ сервисного аккаунта на IAM-токен и **автоматически его обновляет**, а снаружи выглядит как обычный OpenAI-совместимый эндпоинт `/v1`.
+| Endpoint | Назначение |
+|---|---|
+| `GET /healthz` | проверка живости |
+| `GET /v1/models` | **живой** каталог моделей папки Yandex + окно контекста у каждой модели |
+| `GET /v1/models/:id` | одна модель (можно узнать её `context_length`) |
+| `POST /v1/chat/completions` | чат (в т.ч. `stream: true` и `tools` — function calling) |
+| `POST /v1/completions` | legacy completions |
+| `POST /v1/embeddings` | эмбеддинги (`text-embeddings-v2-doc/latest` и др.) |
 
----
+Основные возможности:
 
-## Что поддерживается
+- Каталог моделей берётся **из Yandex** (`GET /v1/models`, кэш 5 минут) — в Hermes видно ровно те модели, к которым есть доступ, с их реальным окном контекста.
+- Имя модели можно передавать коротко (`aliceai-llm/latest`) или полным URI (`gpt://<folder>/aliceai-llm/latest`) — оба варианта работают.
+- Три режима авторизации: статический `API_KEY` (проще всего), готовый `IAM_TOKEN`, ключ сервисного аккаунта `SA_JSON` с автообновлением токена каждые ~55 минут.
 
-| OpenAI-метод          | Куда мапится в Yandex Cloud                          |
-|-----------------------|------------------------------------------------------|
-| `POST /v1/chat/completions` | `foundationModels/v1/chat/completions`         |
-| `POST /v1/completions`      | `foundationModels/v1/completion`               |
-| `POST /v1/embeddings`       | `foundationModels/v1/textEmbedding`            |
-| `GET  /v1/models`           | Список моделей из `PROXY_MODELS`               |
-| `GET  /healthz`             | Проверка, что прокси живой                     |
+## Модели (проверено на живом ключе)
 
-- **Стриминг** (`"stream": true`) проксируется напрямую (SSE).
-- **Автообновление IAM-токена** по расписанию (по умолчанию раз в 55 минут).
-- Модели для Alice AI задайте в `PROXY_MODELS` (например `alice-ai/latest`) — прокси прозрачно форвардит `model` в запросе.
+Окно контекста — из документации Yandex AI Studio (Common instance models). Hermes требует минимум **64 000** токенов для работы с инструментами, поэтому «главной» моделью можно ставить только строки с ✔.
 
-## Быстрый старт
+| Модель (короткое id) | Контекст | Можно как основную в Hermes |
+|---|---|---|
+| `aliceai-llm/latest` — Alice AI LLM | 131 072 | ✔ |
+| `aliceai-llm-flash/latest` — Alice AI LLM Flash | 65 536 | ✔ |
+| `deepseek-v4-flash/latest` | 1 048 576 | ✔ |
+| `qwen3.6-35b-a3b/latest` | 262 144 | ✔ |
+| `qwen3-235b-a22b-fp8/latest` | 262 144 | ✔ |
+| `gpt-oss-120b/latest` | 131 072 | ✔ |
+| `gpt-oss-20b/latest` | 131 072 | ✔ |
+| `yandexgpt-5-pro/latest` — YandexGPT Pro 5 | 32 768 | — (мало для Hermes) |
+| `yandexgpt-5.1/latest` — YandexGPT Pro 5.1 | 32 768 | — |
+| `yandexgpt-5-lite/latest` — YandexGPT Lite 5 | 32 768 | — |
+| `yandexgpt/latest`, `yandexgpt/rc`, `yandexgpt-lite/*` | 32 768 | — |
 
-### 1. Склонируй и установи зависимости
+Проверено 19.09.2026: обычный ответ, стриминг и **function calling** работают у всех моделей выше (кроме `speech-realtime-*` — это Realtime API, через `/v1/chat/completions` они недоступны, поэтому прокси их из каталога исключает).
 
-```bash
-git clone https://github.com/Dachnic058/alice-ai-hermes-proxy.git
-cd alice-ai-hermes-proxy
-npm install
-```
+### Модели и вызов инструментов в Hermes (измерено, не предположение)
 
-### 2. Настрой `.env`
+Hermes — агент: если модель не умеет вызов инструментов, она бесполезна как основная. Проверено реальным запуском Hermes через прокси:
 
-```bash
-cp .env.example .env
-```
+| Модель | Полный набор инструментов Hermes (~20) | Урезанный (`-t terminal,file,web`) |
+|---|---|---|
+| `aliceai-llm/latest` | ✗ отвечает **текстом** в виде ```terminal {"command": ...}``` — вызова инструмента нет | ✔ 2 реальных tool_call |
+| `aliceai-llm-flash/latest` | ✔ 2 tool_call | ✔ |
+| `qwen3.6-35b-a3b/latest` | ✔ 4 tool_call | ✔ |
+| `gpt-oss-120b/latest` | ✔ 2 tool_call | ✔ |
+| `deepseek-v4-flash/latest` | ✔ 2 tool_call | ✔ |
 
-Самый простой вариант — статический API-ключ:
+Сам API-вызов с параметром `tools` работает у Alice AI LLM всегда (в том числе с 30 инструментами с простыми схемами) — ломается именно связка «большой системный промпт + сложные схемы реальных инструментов Hermes». Итог:
 
-```env
-FOLDER_ID=b1g.........
-API_KEY=AQVN.........
-PROXY_MODELS=yandexgpt/latest,yandexgpt-lite/latest,alice-ai/latest
-```
+- хочешь **Алису** — запускай с урезанным набором: `hermes chat -q "..." -m alice -t terminal,file,web`;
+- нужен полный арсенал инструментов — бери `alice-flash`, `qwen-ya`, `oss-ya` или `ds-ya`.
 
-> `API_KEY` — это статический API-ключ сервисного аккаунта (начинается с `AQVN...`), а не IAM-токен. Он не истекает сам.
-
-Альтернатива для продакшена с автообновлением — ключ сервисного аккаунта:
-
-```env
-FOLDER_ID=b1g.........
-SA_JSON_PATH=./authorized_key.json
-PROXY_MODELS=yandexgpt/latest,yandexgpt-lite/latest,alice-ai/latest
-```
-
-Ключ сервисного аккаунта получают так: Yandex Cloud → IAM → Service Accounts → выбрать SA → **Create new key** → скачать `authorized_key.json` и положить рядом с `.env`.
-
-### 3. Запусти
+## Установка на сервер (где работает Hermes)
 
 ```bash
-npm start
-# прокси на http://127.0.0.1:3000/v1
+cd /root/.hermes/health-assistant/alice-ai-hermes-proxy
+# ключи: FOLDER_ID=b1... и API_KEY=AQVN...
+bash deploy/install-host.sh
 ```
 
-### 4. Проверь
+Скрипт: проверит каталог и `.env`, поставит Node.js если его нет, доставит npm-зависимости, пропишет systemd-сервис `alice-ai-proxy` (автозапуск после перезагрузки + авторестарт), дождётся `/healthz`, покажет каталог моделей и сделает **реальный запрос** к модели. Если systemd недоступен — поднимет через `nohup` и добавит `@reboot` в crontab. Скрипт идемпотентный.
+
+Ручной запуск (без автозапуска):
 
 ```bash
-curl http://127.0.0.1:3000/v1/models
-
-curl http://127.0.0.1:3000/v1/chat/completions   -H "Content-Type: application/json"   -d '{
-    "model": "yandexgpt/latest",
-    "messages": [{"role": "user", "content": "Привет!"}]
-  }'
+cd /root/.hermes/health-assistant/alice-ai-hermes-proxy
+node src/server.js            # .env подхватывается автоматически (dotenv)
+curl -s http://127.0.0.1:3000/v1/models | head -c 300
 ```
 
 ## Подключение к Hermes
 
-### Hermes Desktop (GUI)
+```bash
+bash /root/.hermes/health-assistant/alice-ai-hermes-proxy/deploy/connect-hermes.sh
+```
 
-1. **Settings → Providers → Add Provider → Custom Endpoint**
-2. Base URL: `http://127.0.0.1:3000/v1`
-3. API Key: любое значение, например `dummy` (прокси его игнорирует)
-4. Name: `Alice AI via Proxy`
-5. Сохрани → модель появится в списке.
+Скрипт регистрирует endpoint в Hermes и заводит короткие алиасы моделей — после этого в `hermes model` появляется строка с живым списком моделей Yandex, а переключение работает командами вида `/model alice`.
 
-### Hermes CLI
+Что именно прописывается в `~/.hermes/config.yaml` (эквивалент вручную):
+
+```
+hermes config set custom_providers '[{"name":"alice","base_url":"http://127.0.0.1:3000/v1","api_key":"dummy","model":"aliceai-llm/latest"}]'
+
+hermes config set model_aliases.alice.model        aliceai-llm/latest
+hermes config set model_aliases.alice.provider     custom
+hermes config set model_aliases.alice.base_url     http://127.0.0.1:3000/v1
+```
+
+Сделать Alice AI LLM моделью по умолчанию (необязательно):
+
+```
+hermes config set model.provider       custom
+hermes config set model.base_url       http://127.0.0.1:3000/v1
+hermes config set model.default        aliceai-llm/latest
+hermes config set model.context_length 131072
+```
+
+> Порядок важен: сначала `model.provider`, потом `model.base_url` — иначе Hermes считает `base_url` «наследством» прежнего провайдера и очищает его.
+
+## Диагностика
 
 ```bash
-hermes model add --name "Alice AI via Proxy"   --provider custom   --base-url http://127.0.0.1:3000/v1   --api-key dummy
+systemctl status alice-ai-proxy          # или: journalctl -u alice-ai-proxy -n 50
+tail -30 /root/.hermes/health-assistant/alice-ai-hermes-proxy/proxy.log
+curl -s http://127.0.0.1:3000/v1/models | head -c 400
+python3 scripts/probe_models.py          # прогоняет каждую модель: чат + function calling
 ```
 
-## Деплой
+Частые ошибки:
 
-### PM2 (рекомендуется для VPS, например Hetzner)
+- `Failed to get model` — модели с таким id нет в твоей папке. Посмотри живой список: `curl -s localhost:3000/v1/models`.
+- `401 / Unknown api key` — ключ в `.env` не тот или у сервисного аккаунта нет роли `ai.languageModels.user`.
+- `503` при работе Hermes — прокси не запущен (проверь `systemctl status alice-ai-proxy`).
+
+## Безопасность
+
+- `HOST=127.0.0.1` по умолчанию: доступен только на самом сервере. Не выставляй прокси в интернет без слоя авторизации — тогда его ключ смогут тратить чужие.
+- `.env` не попадает в git (см. `.gitignore`).
+- Для доступа с Windows-машины используй SSH-туннель, а не публикацию порта.
+
+## Тесты
+
+Запустить прокси и прогнать все модели (чат + function calling) с реальным ключом:
 
 ```bash
-npm install
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup   # автозапуск после перезагрузки
+node src/server.js &
+python3 scripts/probe_models.py
 ```
 
-> В PM2 < 5.4 `.env` автоматически не подхватывается — запускайте так:
-> `pm2 start src/server.js --name alice-ai-hermes-proxy --node-args="--env-file=.env"`
-
-### Docker
-
-```bash
-cp .env.example .env   # заполните
-docker compose up -d --build
-```
-
-## Важные замечания
-
-- **Никогда не выкладывайте** `authorized_key.json` и `.env` в git (они в `.gitignore`).
-- **API-ключ начинающийся с `AQVN...`** — статический API-ключ сервисного аккаунта: подходит для `API_KEY`, не истекает сам. IAM-токен (`t1....`) — временный, для `IAM_TOKEN`. Для автообновления — `authorized_key.json`.
-- Токены валятся в биллинг **Yandex Cloud** — лимиты/квоты смотрите там.
-- Если Hermes на другом хосте — запустите прокси на VPS и укажите в Hermes `http://<vps-ip>:3000/v1`, при этом **ограничьте доступ** (фаервол / VPN / reverse proxy с авторизацией), так как эндпоинт без авторизации тратит ваши токены.
-
-## Архитектура
-
-```
-Hermes (Custom Endpoint)
-   │  OpenAI-формат
-   ▼
-alice-ai-hermes-proxy (Express, :3000)
-   │  Authorization: Bearer <IAM> + x-folder-id
-   ▼
-Yandex Cloud foundationModels/v1
-```
-
-## Лицензия
-
-MIT
+Результат на 19.09.2026 — все 13 chat-моделей ответили, у всех работает `tool_calls`.

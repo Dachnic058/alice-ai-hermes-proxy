@@ -1,0 +1,19 @@
+[Unit]
+Description=Alice AI / YandexGPT OpenAI-compatible proxy for Hermes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Путь к каталогу проекта (на сервере, где работает Hermes)
+WorkingDirectory=/root/.hermes/health-assistant/alice-ai-hermes-proxy
+# Путь к node подставляется установщиком (deploy/install-host.sh)
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+StandardOutput=append:/root/.hermes/health-assistant/alice-ai-hermes-proxy/proxy.log
+StandardError=append:/root/.hermes/health-assistant/alice-ai-hermes-proxy/proxy.log
+
+[Install]
+WantedBy=multi-user.target
