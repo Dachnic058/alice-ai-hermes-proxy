@@ -95,6 +95,32 @@ WORKER_MODEL=gpt-oss-120b/latest bash /root/.hermes/health-assistant/alice-ai-he
 
 Скрипт пишет `delegation.base_url` + `delegation.model` + `delegation.api_key` (проверено на Hermes v0.21.3: голова вызывает субагента, и в `proxy.log` видны его запросы отдельной моделью). Откат — `hermes config unset delegation.base_url delegation.model delegation.api_key`.
 
+### Какие модели годятся в воркеры (измерено)
+
+Hermes **не принимает** модель-воркер с окном меньше 64 000 токенов. Текст ошибки `delegate_task`:
+
+```
+Model yandexgpt-5-pro/latest has a context window of 32,768 tokens, which is below the
+minimum 64,000 required by Hermes Agent. Choose a model with at least 64K context.
+```
+
+Поэтому **все YandexGPT (32k) как воркер невозможны** — включая `yandexgpt-5-pro`, `yandexgpt-5.1`, `yandexgpt/latest`.
+
+Одна и та же задача («посчитай файлы в `/workspace` командой `ls | wc -l`»; истина — 3) на разных моделях:
+
+| Модель-воркер | Контекст | Что сделала | Вердикт |
+|---|---|---|---|
+| `gpt-oss-120b/latest` | 131 072 | выполнила `ls /workspace \| wc -l` → 3 | ✔ верно |
+| `qwen3-235b-a22b-fp8/latest` | 262 144 | выполнила нужную команду → 3 | ✔ верно |
+| `deepseek-v4-flash/latest` | 1 048 576 | выполнила нужную команду → 3 | ✔ верно |
+| `aliceai-llm/latest` | 131 072 | инструмент не вызвала, ответила «0» | ✘ |
+| `aliceai-llm-flash/latest` | 65 536 | выполнила `ls /tmp/hermes-src` вместо `/workspace`, отчиталась «101» | ✘ |
+| `qwen3.6-35b-a3b/latest` | 262 144 | инструмент вызвала, число неверное | ✘ |
+
+Вывод: воркером ставить `gpt-oss-120b/latest` (альтернативы — `qwen3-235b-a22b-fp8`, `deepseek-v4-flash`), а результат воркера всё равно проверять: одна и та же модель может молча сделать не то действие. Скрипт прогона — `scripts/probe_worker_models.py`.
+
+Отдельная ловушка: если модель-воркер не проходит проверку окна, `delegate_task` возвращает ошибку, **субагент не создаётся**, а голова иногда делает работу сама и сообщает «субагент вернул …» — как будто делегирование состоялось. Проверять надо не текст ответа, а наличие дочерней сессии (`source='subagent'` в `state.db`) и строку в `proxy.log`.
+
 Что именно прописывается в `~/.hermes/config.yaml` (эквивалент вручную):
 
 ```
