@@ -58,9 +58,24 @@ fi
 
 # --------------------------------------------- 2. регистрация endpoint
 say "2/5 Регистрируем endpoint в Hermes"
+PROV_NAME="alice"
 EXISTING="$(hermes config get custom_providers --json 2>/dev/null || echo 'null')"
 if printf '%s' "$EXISTING" | grep -q '127.0.0.1:3000'; then
-    ok "endpoint уже прописан в custom_providers — пропускаю"
+    # Имя уже зарегистрированного провайдера берём из конфига: именно на него будут
+    # ссылаться алиасы (Hermes ищет кастомный провайдер по имени).
+    DETECTED="$(printf '%s' "$EXISTING" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+entries = data if isinstance(data, list) else []
+for e in entries:
+    if isinstance(e, dict) and '127.0.0.1:3000' in str(e.get('base_url', '')):
+        print(str(e.get('name') or '').strip()); break
+" 2>/dev/null || true)"
+    [ -n "${DETECTED:-}" ] && PROV_NAME="$DETECTED"
+    ok "endpoint уже прописан в custom_providers — использую имя «${PROV_NAME}»"
 elif [ "$EXISTING" = "null" ] || [ -z "$EXISTING" ] || [ "$EXISTING" = "[]" ]; then
     hermes config set custom_providers \
         "[{\"name\":\"alice\",\"base_url\":\"${BASE_URL}\",\"api_key\":\"dummy\",\"model\":\"${DEFAULT_MODEL}\"}]" >/dev/null
@@ -70,13 +85,16 @@ else
     warn "текущее значение: $(printf '%s' "$EXISTING" | head -c 200)"
     warn "проще всего добавить endpoint через интерактивный выбор: hermes model → Custom endpoint"
     warn "  base_url: ${BASE_URL}   api_key: dummy   model: ${DEFAULT_MODEL}"
+    warn "алиасы ниже будут ссылаться на имя «${PROV_NAME}» — поправь, если назовёшь иначе"
 fi
 
 # ----------------------------------------------------- 3. алиасы моделей
 say "3/5 Алиасы моделей (переключение через /model <алиас>)"
+# Провайдер у алиаса — ИМЯ кастомного endpoint'а, а не служебное «custom»: иначе
+# Hermes ругается «provider 'custom' resolved without credentials» и не стартует.
 set_alias() {  # $1 = имя, $2 = model id
     hermes config set "model_aliases.$1.model"    "$2"        >/dev/null
-    hermes config set "model_aliases.$1.provider" custom      >/dev/null
+    hermes config set "model_aliases.$1.provider" "$PROV_NAME" >/dev/null
     hermes config set "model_aliases.$1.base_url" "$BASE_URL" >/dev/null
     printf '   \033[0;32m✓\033[0m %-12s → %s\n' "$1" "$2"
 }
@@ -111,7 +129,7 @@ if [ "$SKIP_TEST" != "1" ]; then
     BEFORE="$(curl -sf -m 5 "${ROOT_URL}/healthz" | grep -o '"requests":[0-9]*' | cut -d: -f2)"
     printf '   делаю тестовый запрос через Hermes (модель alice, ~10 секунд)\n'
     OUT="$(timeout 180 hermes chat -q "Ответь одним словом: столица Франции?" -m alice 2>&1 || true)"
-    printf '%s\n' "$OUT" | tail -3 | sed 's/^/     /'
+    printf '%s\n' "$OUT" | tail -12 | sed 's/^/     /'
     AFTER="$(curl -sf -m 5 "${ROOT_URL}/healthz" | grep -o '"requests":[0-9]*' | cut -d: -f2)"
     LAST_MODEL="$(curl -sf -m 5 "${ROOT_URL}/healthz" | grep -o '"last_model":"[^"]*"' | cut -d'"' -f4)"
     if [ -n "$AFTER" ] && [ -n "$BEFORE" ] && [ "$AFTER" -gt "$BEFORE" ] && printf '%s' "$OUT" | grep -qiE 'париж'; then
