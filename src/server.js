@@ -252,7 +252,7 @@ function modelEntry(id, ownedBy, created) {
   return entry;
 }
 
-let catalogCache = { at: 0,  null };
+let catalogCache = { at: 0, data: null };
 
 async function fetchCatalog() {
   const now = Date.now();
@@ -390,7 +390,7 @@ app.get('/metrics/tokens', (_req, res) => res.json({
 // --- Model catalog ---
 app.get('/v1/models', async (_req, res) => {
   const data = await fetchCatalog();
-  res.json({ object: 'list',  data.map(m => ({ ...m, created: m.created || Math.floor(Date.now() / 1000) })) });
+  res.json({ object: 'list', data: data.map(m => ({ ...m, created: m.created || Math.floor(Date.now() / 1000) })) });
 });
 
 app.get('/v1/models/:id', async (req, res) => {
