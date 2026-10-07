@@ -1,6 +1,12 @@
 /**
- * alice-ai-hermes-proxy v2.0
+ * alice-ai-hermes-proxy v2.1
  * OpenAI-compatible proxy for Alice AI / YandexGPT (Yandex Cloud AI Studio).
+ *
+ * Changelog v2.1:
+ *   + Token usage is now counted for STREAMING responses too (SSE usage tap:
+ *     the piped body passes a memory-bounded Transform that keeps the last
+ *     ~64 KB and records the final `usage` chunk). Client stream is untouched.
+ *   + stream_requests counter (streaming upstream responses) in /healthz and /metrics/tokens
  *
  * Changelog v2.0:
  *   + Token usage tracking per model (/metrics/tokens)
@@ -142,6 +148,7 @@ const tokenStats = {
   totalCompletionTokens: 0,
   totalTokens: 0,
   requestsWithUsage: 0,
+  streamRequests: 0,
   cacheHits: 0,
   requestsRejected: 0,
   byModel: {},
@@ -164,6 +171,28 @@ function recordUsage(model, usage) {
   tokenStats.byModel[base].requests += 1;
 
   if (ACCESS_LOG) console.log(`[proxy] tokens model=${base} prompt=${pt} completion=${ct} total=${pt + ct}`);
+}
+
+/**
+ * v2.1: extract the last SSE `data:` chunk that carries a `usage` object.
+ * Yandex/OpenAI send it as the final chunk when the client asks for
+ * stream_options.include_usage. We scan backwards so a trailing
+ * `data: [DONE]` (or a truncated tail) never shadows the usage chunk.
+ */
+function extractUsageFromSse(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      const obj = JSON.parse(payload);
+      if (obj && obj.usage) return obj.usage;
+    } catch { /* partial / oversized chunk — keep scanning backwards */ }
+  }
+  return null;
 }
 
 // ===================================================================
@@ -359,7 +388,7 @@ const stats = { startedAt: Date.now(), requests: 0, errors: 0, lastModel: '' };
 
 app.get('/healthz', (_req, res) => res.json({
   ok: true,
-  version: '2.0',
+  version: '2.1',
   uptime_s: Math.round((Date.now() - stats.startedAt) / 1000),
   requests: stats.requests,
   errors: stats.errors,
@@ -369,6 +398,7 @@ app.get('/healthz', (_req, res) => res.json({
     total_completion_tokens: tokenStats.totalCompletionTokens,
     total_tokens: tokenStats.totalTokens,
     requests_with_usage: tokenStats.requestsWithUsage,
+    stream_requests: tokenStats.streamRequests,
     cache_hits: tokenStats.cacheHits,
     requests_rejected: tokenStats.requestsRejected,
   },
@@ -381,6 +411,7 @@ app.get('/metrics/tokens', (_req, res) => res.json({
   total_completion_tokens: tokenStats.totalCompletionTokens,
   total_tokens: tokenStats.totalTokens,
   requests_with_usage: tokenStats.requestsWithUsage,
+  stream_requests: tokenStats.streamRequests,
   cache_hits: tokenStats.cacheHits,
   requests_rejected: tokenStats.requestsRejected,
   cache_size: responseCache.size,
@@ -503,9 +534,48 @@ async function proxyToYandex(path, req, res) {
     res.setHeader('Content-Type', contentType);
 
     if (upstream.body && body.stream) {
-      // Streaming: pipe directly
-      const { Readable } = require('stream');
-      Readable.fromWeb(upstream.body).pipe(res);
+      // Streaming: pass chunks through untouched (no buffering, no delay), but
+      // tap the SSE text so the final `usage` chunk is recorded (v2.1).
+      tokenStats.streamRequests += 1;
+      const { Readable, Transform } = require('stream');
+      const STREAM_TAP_LIMIT = 64 * 1024; // keep at most the last ~64 KB of SSE text
+      let tapBuffer = '';
+      let usageFinalized = false;
+
+      const finalizeStreamUsage = () => {
+        if (usageFinalized) return;
+        usageFinalized = true;
+        const usage = extractUsageFromSse(tapBuffer);
+        if (usage) recordUsage(body.model, usage);
+        else if (ACCESS_LOG) console.log(`[proxy] stream had no usage chunk model=${body.model}`);
+      };
+
+      const tap = new Transform({
+        transform(chunk, _enc, cb) {
+          tapBuffer += chunk.toString('utf8');
+          if (tapBuffer.length > STREAM_TAP_LIMIT) tapBuffer = tapBuffer.slice(-STREAM_TAP_LIMIT);
+          cb(null, chunk); // unchanged chunk — passthrough stays streaming
+        },
+        flush(cb) { finalizeStreamUsage(); cb(); },
+      });
+
+      const source = Readable.fromWeb(upstream.body);
+      const onStreamError = (where, err) => {
+        stats.errors += 1;
+        console.error(`[proxy] ${where} stream error:`, err && err.message);
+        finalizeStreamUsage();
+        if (!res.writableEnded) res.end();
+      };
+      source.on('error', err => onStreamError('upstream', err));
+      tap.on('error', err => onStreamError('tap', err));
+      // Client aborted mid-stream: record what we saw and drop the upstream.
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          finalizeStreamUsage();
+          source.destroy();
+        }
+      });
+      source.pipe(tap).pipe(res);
     } else if (upstream.body) {
       // Non-streaming: read full response for cache + token tracking
       const text = await upstream.text();
@@ -543,7 +613,7 @@ let isShuttingDown = false;
 const activeConnections = new Set();
 
 const server = app.listen(PORT, HOST, async () => {
-  console.log(`[proxy] v2.0 listening on http://${HOST}:${PORT}/v1`);
+  console.log(`[proxy] v2.1 listening on http://${HOST}:${PORT}/v1`);
   console.log(`[proxy] limits: max_tokens=${MAX_REQUEST_TOKENS} rate=${RATE_LIMIT_RPM}rpm cache=${CACHE_MAX_ENTRIES} history=${MAX_HISTORY_MESSAGES}`);
 
   if (API_KEY) {
